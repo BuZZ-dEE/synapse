@@ -534,6 +534,53 @@ class EventPushActionsStore(SQLBaseStore):
 
         return range_end
 
+    def _rotate_notifs_txn(self, txn):
+        self.database_engine.lock_table(txn, "event_push_actions")
+
+        sql = """
+            SELECT user_id, room_id,
+                coalesce(old.notif_count, 0) + upd.notif_count,
+                old.user_id
+            FROM (
+                SELECT user_id, room_id, count(*) as notif_count FROM event_push_actions
+                WHERE stream_ordering < ? AND highlight = 0
+                GROUP BY user_id, room_id
+            ) AS upd
+            LEFT JOIN event_push_summary AS old USING (user_id, room_id)
+        """
+
+        txn.execute(sql, (self.stream_ordering_month_ago,))
+        rows = txn.fetchall()
+
+        # If the `old.user_id` above is NULL then we know there isn't already an
+        # entry in the table, so we simply insert it. Otherwise we update the
+        # existing table.
+        self._simple_insert_many_txn(
+            txn,
+            table="event_push_summary",
+            values=[
+                {
+                    "user_id": row[0],
+                    "room_id": row[1],
+                    "notif_count": row[2],
+                }
+                for row in rows if row[3] is None
+            ]
+        )
+
+        txn.executemany(
+            """
+                UPDATE event_push_summary SET notif_count = ?
+                WHERE user_id = ? AND room_id = ?
+            """,
+            ((row[2], row[0], row[1],) for row in rows if row[3] is not None)
+        )
+
+        txn.execute(
+            "DELETE FROM event_push_actions WHERE stream_ordering < ? AND highlight = 0",
+            (self.stream_ordering_month_ago,)
+        )
+
 
 def _action_has_highlight(actions):
     for action in actions:

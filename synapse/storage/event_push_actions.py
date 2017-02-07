@@ -641,7 +641,7 @@ class EventPushActionsStore(SQLBaseStore):
                 old.user_id
             FROM (
                 SELECT user_id, room_id, count(*) as notif_count,
-                    max(strema_ordering) as stream_ordering
+                    max(stream_ordering) as stream_ordering
                 FROM event_push_actions
                 WHERE stream_ordering <= ? AND stream_ordering < ?
                 GROUP BY user_id, room_id

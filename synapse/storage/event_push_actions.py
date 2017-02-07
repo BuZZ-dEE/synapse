@@ -616,8 +616,10 @@ class EventPushActionsStore(SQLBaseStore):
             rotate_to_stream_ordering = min(
                 self.stream_ordering_day_ago, offset_stream_ordering
             )
+            caught_up = offset_stream_ordering >= self.stream_ordering_day_ago
         else:
             rotate_to_stream_ordering = self.stream_ordering_day_ago
+            caught_up = True
 
         # Calculate the new counts that should be upserted into event_push_summary
         sql = """
@@ -670,7 +672,7 @@ class EventPushActionsStore(SQLBaseStore):
         )
 
         # We have caught up iff we were limited by `stream_ordering_day_ago`
-        return offset_stream_ordering >= self.stream_ordering_day_ago
+        return caught_up
 
 
 def _action_has_highlight(actions):

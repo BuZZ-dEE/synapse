@@ -17,7 +17,8 @@
 CREATE TABLE event_push_summary (
     user_id TEXT NOT NULL,
     room_id TEXT NOT NULL,
-    notif_count BIGINT NOT NULL
+    notif_count BIGINT NOT NULL,
+    stream_ordering BIGINT NOT NULL
 );
 
 CREATE INDEX event_push_summary_user_rm ON event_push_summary(user_id, room_id);

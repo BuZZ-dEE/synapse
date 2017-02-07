@@ -499,12 +499,16 @@ class EventPushActionsStore(SQLBaseStore):
 
         rotate_stream_ordering = self._simple_select_one_onecol_txn(
             txn,
-            table="event_push_summary_stream_ordering",
-            keyvalues={},
+            table="event_push_summary",
+            keyvalues={
+                "user_id": user_id,
+                "room_id": room_id
+            },
             retcol="stream_ordering",
+            allow_none=True,
         )
 
-        if stream_ordering >= rotate_stream_ordering:
+        if rotate_stream_ordering and stream_ordering >= rotate_stream_ordering:
             self._simple_delete_txn(
                 txn,
                 table="event_push_summary",
@@ -633,9 +637,12 @@ class EventPushActionsStore(SQLBaseStore):
         sql = """
             SELECT user_id, room_id,
                 coalesce(old.notif_count, 0) + upd.notif_count,
+                upd.stream_ordering,
                 old.user_id
             FROM (
-                SELECT user_id, room_id, count(*) as notif_count FROM event_push_actions
+                SELECT user_id, room_id, count(*) as notif_count,
+                    max(strema_ordering) as stream_ordering
+                FROM event_push_actions
                 WHERE stream_ordering <= ? AND stream_ordering < ?
                 GROUP BY user_id, room_id
             ) AS upd
@@ -656,17 +663,18 @@ class EventPushActionsStore(SQLBaseStore):
                     "user_id": row[0],
                     "room_id": row[1],
                     "notif_count": row[2],
+                    "stream_ordering": row[3],
                 }
-                for row in rows if row[3] is None
+                for row in rows if row[4] is None
             ]
         )
 
         txn.executemany(
             """
-                UPDATE event_push_summary SET notif_count = ?
+                UPDATE event_push_summary SET notif_count = ?, stream_ordering = ?
                 WHERE user_id = ? AND room_id = ?
             """,
-            ((row[2], row[0], row[1],) for row in rows if row[3] is not None)
+            ((row[2], row[3], row[0], row[1],) for row in rows if row[4] is not None)
         )
 
         txn.execute(

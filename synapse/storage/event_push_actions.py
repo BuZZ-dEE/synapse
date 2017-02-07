@@ -15,6 +15,7 @@
 
 from ._base import SQLBaseStore
 from twisted.internet import defer
+from synapse.util.async import sleep
 from synapse.util.caches.descriptors import cachedInlineCallbacks
 from synapse.types import RoomStreamToken
 from .stream import lower_bound
@@ -30,6 +31,7 @@ class EventPushActionsStore(SQLBaseStore):
 
     def __init__(self, hs):
         self.stream_ordering_month_ago = None
+        self.stream_ordering_day_ago = None
         super(EventPushActionsStore, self).__init__(hs)
 
         self.register_background_index_update(
@@ -46,6 +48,9 @@ class EventPushActionsStore(SQLBaseStore):
             columns=["user_id", "room_id", "topological_ordering", "stream_ordering"],
             where_clause="highlight=1"
         )
+
+        self._doing_notif_rotation = False
+        self._clock.looping_call(self._rotate_notifs, 1000)
 
     def _set_push_actions_for_event_and_users_txn(self, txn, event, tuples):
         """
@@ -111,6 +116,20 @@ class EventPushActionsStore(SQLBaseStore):
             txn.execute(sql, (user_id, room_id))
             row = txn.fetchone()
             notify_count = row[0] if row else 0
+
+            summary_notif_count = self._simple_select_one_onecol_txn(
+                txn,
+                table="event_push_summary",
+                keyvalues={
+                    "user_id": user_id,
+                    "room_id": room_id,
+                },
+                retcol="notif_count",
+                allow_none=True,
+            )
+
+            if summary_notif_count:
+                notify_count += summary_notif_count
 
             # Now get the number of highlights
             sql = (
@@ -448,7 +467,7 @@ class EventPushActionsStore(SQLBaseStore):
         )
 
     def _remove_old_push_actions_before_txn(self, txn, room_id, user_id,
-                                            topological_ordering):
+                                            topological_ordering, stream_ordering):
         """
         Purges old, stale push actions for a user and room before a given
         topological_ordering
@@ -479,6 +498,23 @@ class EventPushActionsStore(SQLBaseStore):
             (user_id, room_id, topological_ordering, self.stream_ordering_month_ago)
         )
 
+        rotate_stream_ordering = self._simple_select_one_onecol_txn(
+            txn,
+            table="event_push_summary_stream_ordering",
+            keyvalues={},
+            retcol="stream_ordering",
+        )
+
+        if stream_ordering >= rotate_stream_ordering:
+            self._simple_delete_txn(
+                txn,
+                table="event_push_summary",
+                keyvalues={
+                    "room_id": room_id,
+                    "user_id": user_id,
+                }
+            )
+
     @defer.inlineCallbacks
     def _find_stream_orderings_for_times(self):
         yield self.runInteraction(
@@ -494,6 +530,14 @@ class EventPushActionsStore(SQLBaseStore):
         logger.info(
             "Found stream ordering 1 month ago: it's %d",
             self.stream_ordering_month_ago
+        )
+        logger.info("Searching for stream ordering 1 day ago")
+        self.stream_ordering_day_ago = self._find_first_stream_ordering_after_ts_txn(
+            txn, self._clock.time_msec() - 24 * 60 * 60 * 1000
+        )
+        logger.info(
+            "Found stream ordering 1 day ago: it's %d",
+            self.stream_ordering_day_ago
         )
 
     def _find_first_stream_ordering_after_ts_txn(self, txn, ts):
@@ -534,9 +578,51 @@ class EventPushActionsStore(SQLBaseStore):
 
         return range_end
 
-    def _rotate_notifs_txn(self, txn):
-        self.database_engine.lock_table(txn, "event_push_actions")
+    @defer.inlineCallbacks
+    def _rotate_notifs(self):
+        if self._doing_notif_rotation:
+            return
+        self._doing_notif_rotation = True
 
+        try:
+            while True:
+                logger.info("Rotating notifications")
+
+                caught_up = yield self.runInteraction(
+                    "_rotate_notifs",
+                    self._rotate_notifs_txn
+                )
+                if caught_up:
+                    break
+                yield sleep(1)
+        finally:
+            self._doing_notif_rotation = False
+
+    def _rotate_notifs_txn(self, txn):
+        """Archives older notifications into event_push_summary. Returns whether
+        the archiving process has caught up or not.
+        """
+
+        # We want to make sure that we only ever do this one at a time
+        self.database_engine.lock_table(txn, "event_push_summary")
+
+        # We don't to try and rotate millions of rows at once, so we cap the
+        # maximum stream ordering we'll rotate before.
+        txn.execute("""
+            SELECT stream_ordering FROM event_push_actions
+            ORDER BY stream_ordering ASC LIMIT 1 OFFSET 50000
+        """)
+        stream_row = txn.fetchone()
+        if stream_row:
+            offset_stream_ordering, = stream_row
+        else:
+            offset_stream_ordering = 0
+
+        rotate_to_stream_ordering = min(
+            self.stream_ordering_day_ago, offset_stream_ordering
+        )
+
+        # Calculate the new counts that should be upserted into event_push_summary
         sql = """
             SELECT user_id, room_id,
                 coalesce(old.notif_count, 0) + upd.notif_count,
@@ -549,7 +635,7 @@ class EventPushActionsStore(SQLBaseStore):
             LEFT JOIN event_push_summary AS old USING (user_id, room_id)
         """
 
-        txn.execute(sql, (self.stream_ordering_month_ago,))
+        txn.execute(sql, (rotate_to_stream_ordering,))
         rows = txn.fetchall()
 
         # If the `old.user_id` above is NULL then we know there isn't already an
@@ -578,8 +664,16 @@ class EventPushActionsStore(SQLBaseStore):
 
         txn.execute(
             "DELETE FROM event_push_actions WHERE stream_ordering < ? AND highlight = 0",
-            (self.stream_ordering_month_ago,)
+            (rotate_to_stream_ordering,)
         )
+
+        txn.execute(
+            "UPDATE event_push_summary_stream_ordering SET stream_ordering = ?",
+            (rotate_to_stream_ordering,)
+        )
+
+        # We have caught up iff we were limited by `stream_ordering_day_ago`
+        return offset_stream_ordering >= self.stream_ordering_day_ago
 
 
 def _action_has_highlight(actions):

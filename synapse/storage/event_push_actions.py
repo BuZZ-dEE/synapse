@@ -619,7 +619,7 @@ class EventPushActionsStore(SQLBaseStore):
             caught_up = offset_stream_ordering >= self.stream_ordering_day_ago
         else:
             rotate_to_stream_ordering = self.stream_ordering_day_ago
-            caught_up = True
+            caught_up = False
 
         # Calculate the new counts that should be upserted into event_push_summary
         sql = """

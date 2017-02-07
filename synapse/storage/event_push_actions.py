@@ -30,8 +30,6 @@ class EventPushActionsStore(SQLBaseStore):
     EPA_HIGHLIGHT_INDEX = "epa_highlight_index"
 
     def __init__(self, hs):
-        self.stream_ordering_month_ago = None
-        self.stream_ordering_day_ago = None
         super(EventPushActionsStore, self).__init__(hs)
 
         self.register_background_index_update(

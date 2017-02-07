@@ -580,7 +580,7 @@ class EventPushActionsStore(SQLBaseStore):
 
     @defer.inlineCallbacks
     def _rotate_notifs(self):
-        if self._doing_notif_rotation:
+        if self._doing_notif_rotation or self.stream_ordering_day_ago is None:
             return
         self._doing_notif_rotation = True
 

@@ -622,6 +622,13 @@ class EventPushActionsStore(SQLBaseStore):
             rotate_to_stream_ordering = self.stream_ordering_day_ago
             caught_up = False
 
+        old_rotate_stream_ordering = self._simple_select_one_onecol_txn(
+            txn,
+            table="event_push_summary_stream_ordering",
+            keyvalues={},
+            retcol="stream_ordering",
+        )
+
         # Calculate the new counts that should be upserted into event_push_summary
         sql = """
             SELECT user_id, room_id,
@@ -629,13 +636,13 @@ class EventPushActionsStore(SQLBaseStore):
                 old.user_id
             FROM (
                 SELECT user_id, room_id, count(*) as notif_count FROM event_push_actions
-                WHERE stream_ordering < ? AND highlight = 0
+                WHERE stream_ordering <= ? AND stream_ordering < ?
                 GROUP BY user_id, room_id
             ) AS upd
             LEFT JOIN event_push_summary AS old USING (user_id, room_id)
         """
 
-        txn.execute(sql, (rotate_to_stream_ordering,))
+        txn.execute(sql, (old_rotate_stream_ordering, rotate_to_stream_ordering,))
         rows = txn.fetchall()
 
         # If the `old.user_id` above is NULL then we know there isn't already an

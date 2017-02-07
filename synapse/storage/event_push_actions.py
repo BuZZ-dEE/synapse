@@ -613,12 +613,11 @@ class EventPushActionsStore(SQLBaseStore):
         stream_row = txn.fetchone()
         if stream_row:
             offset_stream_ordering, = stream_row
+            rotate_to_stream_ordering = min(
+                self.stream_ordering_day_ago, offset_stream_ordering
+            )
         else:
-            offset_stream_ordering = 0
-
-        rotate_to_stream_ordering = min(
-            self.stream_ordering_day_ago, offset_stream_ordering
-        )
+            rotate_to_stream_ordering = self.stream_ordering_day_ago
 
         # Calculate the new counts that should be upserted into event_push_summary
         sql = """

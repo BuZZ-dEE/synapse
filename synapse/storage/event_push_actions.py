@@ -492,7 +492,7 @@ class EventPushActionsStore(SQLBaseStore):
         txn.execute(
             "DELETE FROM event_push_actions "
             " WHERE user_id = ? AND room_id = ? AND "
-            " topological_ordering < ?"
+            " topological_ordering <= ?"
             " AND ((stream_ordering < ? AND highlight = 1) or highlight = 0)",
             (user_id, room_id, topological_ordering, self.stream_ordering_month_ago)
         )
@@ -624,7 +624,7 @@ class EventPushActionsStore(SQLBaseStore):
             caught_up = offset_stream_ordering >= self.stream_ordering_day_ago
         else:
             rotate_to_stream_ordering = self.stream_ordering_day_ago
-            caught_up = False
+            caught_up = True
 
         old_rotate_stream_ordering = self._simple_select_one_onecol_txn(
             txn,
@@ -678,8 +678,9 @@ class EventPushActionsStore(SQLBaseStore):
         )
 
         txn.execute(
-            "DELETE FROM event_push_actions WHERE stream_ordering < ? AND highlight = 0",
-            (rotate_to_stream_ordering,)
+            "DELETE FROM event_push_actions"
+            " WHERE ? <= stream_ordering AND stream_ordering < ? AND highlight = 0",
+            (old_rotate_stream_ordering, rotate_to_stream_ordering,)
         )
 
         txn.execute(
